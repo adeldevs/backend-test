@@ -1,8 +1,28 @@
 const axios = require('axios');
-const { JSDOM } = require('jsdom');
+const { JSDOM, VirtualConsole } = require('jsdom');
 const { Readability } = require('@mozilla/readability');
 
 const { env } = require('../../config/env');
+
+function stripStyles(html) {
+  if (!html) return html;
+  // JSDOM's CSS parser can choke on modern CSS (e.g. :has()) and will spew huge logs.
+  // Styles are not needed for Readability() extraction, so remove them.
+  return String(html)
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<link\b[^>]*rel=["']?stylesheet["']?[^>]*>/gi, '');
+}
+
+function createDom(html, url) {
+  const virtualConsole = new VirtualConsole();
+  // Swallow noisy jsdom errors (e.g. CSS parse failures). We handle extraction failure separately.
+  virtualConsole.on('jsdomError', () => {});
+
+  return new JSDOM(stripStyles(html), {
+    url,
+    virtualConsole,
+  });
+}
 
 function normalizeMaybeUrl(raw, baseUrl) {
   if (!raw) return undefined;
@@ -47,7 +67,7 @@ function extractMetaImageUrl(document, baseUrl) {
 function extractContentImageUrl(articleContentHtml, baseUrl) {
   if (!articleContentHtml) return undefined;
   try {
-    const dom = new JSDOM(articleContentHtml, { url: baseUrl });
+    const dom = createDom(articleContentHtml, baseUrl);
     const doc = dom.window.document;
     const img = doc.querySelector('img');
     if (!img) return undefined;
@@ -74,7 +94,7 @@ async function fetchHtml(url) {
 }
 
 function extractReadableText(html, url) {
-  const dom = new JSDOM(html, { url });
+  const dom = createDom(html, url);
   const document = dom.window.document;
   const reader = new Readability(document);
   const article = reader.parse();

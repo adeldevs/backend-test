@@ -71,6 +71,11 @@ const ArticleSummarySchema = new mongoose.Schema(
       ],
       default: [],
     },
+    categories: {
+      type: [String],
+      default: [],
+      index: true,
+    },
   },
   { timestamps: true, suppressReservedKeysWarning: true }
 );

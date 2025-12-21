@@ -18,6 +18,24 @@ async function start() {
     console.log(`Server listening on port ${env.PORT}`);
   });
 
+  const shutdown = (signal) => {
+    console.log(`Received ${signal}. Shutting down...`);
+
+    const forceExitTimer = setTimeout(() => {
+      console.warn('Forced shutdown after timeout.');
+      process.exit(0);
+    }, 10_000);
+    forceExitTimer.unref();
+
+    server.close(() => {
+      clearTimeout(forceExitTimer);
+      process.exit(0);
+    });
+  };
+
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => shutdown('SIGINT'));
+
   startScheduler();
 
   return server;

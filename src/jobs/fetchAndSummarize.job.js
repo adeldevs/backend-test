@@ -1,3 +1,28 @@
+// List of valid categories
+const VALID_CATEGORIES = [
+  // Science & Technology
+  'Acoustics','Aerospace Engineering','Agronomy','Artificial Intelligence','Astronomy','Astrophysics','Automation','Bioinformatics','Biotechnology','Blockchain','Botany','Chemical Engineering','Civil Engineering','Cloud Computing','Computer Vision','Consumer Electronics','Cryptography','Cybersecurity','Data Science','Ecology','Electrical Engineering','Entomology','Epidemiology','Evolutionary Biology','Forensic Science','Game Development','Genetics','Geology','Hacking','Hydrology','Immunology','Information Technology','Internet of Things (IoT)','Machine Learning','Marine Biology','Materials Science','Mechanical Engineering','Meteorology','Microbiology','Nanotechnology','Neuroscience','Nuclear Physics','Oceanography','Optics','Organic Chemistry','Paleontology','Particle Physics','Pharmacology','Quantum Mechanics','Robotics','Software Engineering','Space Exploration','Sustainability','Telecommunications','Thermodynamics','Toxicology','Virtual Reality (VR)','Web Development','Zoology',
+  // Humanities & Social Sciences
+  'Anthropology','Archaeology','Cognitive Science','Criminology','Demography','Developmental Psychology','Epistemology','Ethics','Ethnography','Gender Studies','Genealogy','Geography','Geopolitics','History (Ancient, Medieval, Modern)','Human Rights','International Relations','Law (Constitutional, Corporate, Criminal)','Linguistics','Logic','Media Studies','Metaphysics','Military History','Mythology','Pedagogy','Philosophy','Political Science','Psychology (Clinical, Social, Behavioral)','Public Administration','Religious Studies','Social Work','Sociology','Theology','Urban Planning',
+  // Business & Economics
+  'Accounting','Advertising','Behavioral Economics','Branding','Business Ethics','Corporate Governance','Cryptocurrency','Digital Marketing','E-commerce','Entrepreneurship','Finance (Personal, Corporate)','Human Resources','Industrial Relations','Insurance','International Trade','Investing','Logistics','Macroeconomics','Management','Microeconomics','Operations Management','Project Management','Real Estate','Sales','Stock Market','Supply Chain Management','Taxation','Venture Capital',
+  // Arts, Culture & Media
+  'Animation','Architecture','Art History','Calligraphy','Cinematography','Creative Writing','Culinary Arts','Dance','Design (Graphic, Industrial, Interior)','Fashion','Film Studies','Fine Arts','Journalism','Literature','Music Theory','Performing Arts','Photography','Poetry','Pop Culture','Publishing','Sculpture','Stand-up Comedy','Television','Textile Design','Theater','Video Games','Visual Arts',
+  // Health, Lifestyle & Sports
+  'Alternative Medicine','Athletic Training','Biohacking','Dental Hygiene','Dermatology','Dietetics','Emergency Medicine','Ergonomics','Fitness','Gastronomy','Geriatrics','Holistic Health','Kinesiology','Meditation','Mental Health','Minimalism','Nursing','Nutrition','Occupational Therapy','Parenting','Pediatrics','Personal Development','Physical Therapy','Productivity','Psychiatry','Public Health','Sports Management','Sports Psychology','Sports Science','Survivalism','Travel & Tourism','Veterinary Medicine','Wellness','Yoga',
+  // Niche & Miscellaneous
+  'Astrology','Aviation','Bibliophilia','Carpentry','Chess','Collecting (Philately, Numismatics)','Conspiracy Theories','Cryptozoology','DIY & Making','Esotericism','Etiquette','Futurism','Gardening','Genealogy','Horticulture','Magic (Illusion)','Maritime Studies','Military Strategy','Numismatics','Occultism','Parapsychology','Philanthropy','Survival Skills','Transhumanism','True Crime','Vexillology (Flags)','Miscellaneous'
+];
+
+function getValidCategories(categories) {
+  if (!Array.isArray(categories)) return ['Miscellaneous'];
+  // Normalize and filter
+  return categories
+    .map((c) => String(c).trim())
+    .filter((c) => VALID_CATEGORIES.includes(c))
+    .filter((v, i, arr) => arr.indexOf(v) === i) // unique
+    .slice(0, 5); // limit to 5 categories max
+}
 const cron = require('node-cron');
 
 const ArticleSummary = require('../models/ArticleSummary');
@@ -186,6 +211,10 @@ async function processFeedItem({ feedUrl, feedTitle }, item) {
       }),
     };
 
+    // Store categories from AI output, filtered to valid list
+    const validCategories = getValidCategories(summaryJson.categories);
+    doc.categories = validCategories;
+
     doc.llm = doc.llm || {};
     doc.llm.model = summaryJson._model || env.GEMINI_MODEL;
     doc.llm.generatedAt = new Date();
@@ -193,7 +222,7 @@ async function processFeedItem({ feedUrl, feedTitle }, item) {
 
     await withMongoRetry(() => doc.save(), 'save(summarized)');
 
-    console.log(`Summarized: ${normalizedUrl} (points: ${doc.summary.points.length}, model: ${doc.llm.model})`);
+    console.log(`Summarized: ${normalizedUrl} (points: ${doc.summary.points.length}, model: ${doc.llm.model}, categories: ${doc.categories})`);
 
     if (env.GEMINI_MIN_DELAY_MS > 0) {
       await sleep(env.GEMINI_MIN_DELAY_MS);
@@ -326,7 +355,9 @@ async function runOnce() {
     const feeds = await fetchAllFeeds(env.RSS_FEED_URLS);
 
     let summarizedThisRun = 0;
-
+    // Collect articles to summarize
+    const articlesToSummarize = [];
+    const articleDocs = [];
     for (const result of feeds) {
       const { feedUrl, feed, error } = result;
       if (error) {
@@ -334,13 +365,100 @@ async function runOnce() {
         console.error(`Feed fetch failed: ${feedUrl} :: ${msg}`);
         continue;
       }
-
       const items = Array.isArray(feed.items) ? feed.items.slice(0, env.MAX_ITEMS_PER_FEED) : [];
       for (const item of items) {
         if (summarizedThisRun >= env.MAX_SUMMARIES_PER_RUN) break;
-        // eslint-disable-next-line no-await-in-loop
-        const result = await processFeedItem({ feedUrl, feedTitle: feed.title }, item);
-        if (result?.didSummarize) summarizedThisRun += 1;
+        // Prepare article extraction
+        const rawLink = item.link;
+        if (!rawLink) continue;
+        const normalizedUrl = normalizeUrl(rawLink);
+        const urlHash = sha256(normalizedUrl);
+        const guid = item.guid || item.id;
+        const guidHash = guid ? sha256(String(guid)) : undefined;
+        const existing = await withMongoRetry(() => ArticleSummary.findOne({ 'dedupe.urlHash': urlHash }).select('_id'), 'findOne(existing)');
+        if (existing) {
+          await upsertLastSeen(urlHash);
+          continue;
+        }
+        const author = pickAuthor(item);
+        const title = item.title || normalizedUrl;
+        const publishedAt = parsePublishedAt(item);
+        const doc = await withMongoRetry(() => ArticleSummary.create({
+          title,
+          author,
+          url: normalizedUrl,
+          guid,
+          feed: { feedUrl, title: feed.title },
+          source: { domain: domainFromUrl(normalizedUrl) },
+          publishedAt,
+          lastSeenAt: new Date(),
+          dedupe: { urlHash, guidHash },
+          status: 'new',
+        }), 'create(ArticleSummary)');
+        try {
+          const extracted = await extractArticle(normalizedUrl);
+          const fallbackText = (item.contentSnippet || item.content || '').toString();
+          const rawText = extracted?.text || fallbackText;
+          if (!rawText || rawText.trim().length < 200) {
+            doc.status = 'failed';
+            doc.errors.push({ stage: 'extract', message: 'Not enough extractable text' });
+            await withMongoRetry(() => doc.save(), 'save(extract-too-short)');
+            continue;
+          }
+          doc.content = {
+            excerpt: extracted?.excerpt || item.contentSnippet,
+            rawText,
+            wordCount: rawText.split(/\s+/).filter(Boolean).length,
+            imageUrl: extracted?.imageUrl,
+          };
+          doc.status = 'extracted';
+          await withMongoRetry(() => doc.save(), 'save(extracted)');
+          doc.status = 'summarizing';
+          await withMongoRetry(() => doc.save(), 'save(summarizing)');
+          articlesToSummarize.push({ author, title: extracted?.title || title, url: normalizedUrl, text: rawText });
+          articleDocs.push(doc);
+          summarizedThisRun += 1;
+        } catch (err) {
+          doc.status = 'failed';
+          doc.errors.push({ stage: 'extract', message: String(err.message || 'Unknown error').slice(0, 2000) });
+          await withMongoRetry(() => doc.save(), 'save(extract-error)');
+        }
+      }
+    }
+
+    // Batch summarize in chunks of 10
+    const { summarizeBatchWithGemini } = require('../services/gemini/summarize');
+    for (let i = 0; i < articlesToSummarize.length; i += 10) {
+      const batch = articlesToSummarize.slice(i, i + 10);
+      const docsBatch = articleDocs.slice(i, i + 10);
+      try {
+        const summaries = await summarizeBatchWithGemini(batch);
+        for (let j = 0; j < summaries.length; j++) {
+          const summaryJson = summaries[j];
+          const doc = docsBatch[j];
+          doc.title = summaryJson.title || doc.title;
+          doc.author = summaryJson.author || doc.author;
+          doc.summary = {
+            version: 1,
+            points: Array.isArray(summaryJson.points) ? summaryJson.points.map((p) => {
+              const bullets = Array.isArray(p.bullets) ? p.bullets.map((b) => String(b).trim()).filter(Boolean) : [];
+              const paragraph = typeof p.paragraph === 'string' ? p.paragraph.trim() : undefined;
+              return { heading: String(p.heading).trim(), bullets, paragraph };
+            }) : [],
+          };
+          doc.categories = getValidCategories(summaryJson.categories);
+          doc.llm = doc.llm || {};
+          doc.llm.model = summaryJson._model || env.GEMINI_MODEL;
+          doc.llm.generatedAt = new Date();
+          doc.status = 'summarized';
+          await withMongoRetry(() => doc.save(), 'save(summarized)');
+          console.log(`Summarized: ${doc.url} (points: ${doc.summary.points.length}, model: ${doc.llm.model}, categories: ${doc.categories})`);
+        }
+      } catch (err) {
+        console.error('Batch summarize error:', err);
+      }
+      if (env.GEMINI_MIN_DELAY_MS > 0) {
+        await sleep(env.GEMINI_MIN_DELAY_MS);
       }
     }
 

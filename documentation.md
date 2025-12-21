@@ -4,17 +4,36 @@ This document describes the HTTP routes exposed by the server: how to call them,
 
 ## Base URL
 
-By default the server runs on port `3000`:
+The API is available at:
 
-- Local: `http://localhost:3000`
+- Deployed (Railway): https://btlearn.up.railway.app
+- Local: http://localhost:3000
 
-Port is configured by `PORT`.
+Port is configured by `PORT` (Railway provides `PORT` automatically).
 
 ## Routes
 
-All summary routes are mounted under `/summaries`.
+### GET /health
 
-### GET /summaries
+Simple health check.
+
+**Example**
+
+```bash
+curl "https://btlearn.up.railway.app/health"
+```
+
+**200 Response**
+
+```json
+{ "ok": true }
+```
+
+### Summary routes
+
+All summary routes are mounted under `/api/summaries`.
+
+### GET /api/summaries
 
 List stored article summaries (paginated).
 
@@ -26,7 +45,7 @@ List stored article summaries (paginated).
 **Example**
 
 ```bash
-curl "http://localhost:3000/summaries?page=1&limit=20"
+curl "https://btlearn.up.railway.app/api/summaries?page=1&limit=20"
 ```
 
 **200 Response**
@@ -68,7 +87,7 @@ curl "http://localhost:3000/summaries?page=1&limit=20"
 - `content.imageUrl` is an optional string. It may be missing/empty if the extractor couldn’t find a good image.
 - The list endpoint intentionally does **not** include `content.rawText`.
 
-### GET /summaries/:id
+### GET /api/summaries/:id
 
 Fetch a single stored summary by Mongo ObjectId.
 
@@ -83,11 +102,11 @@ Fetch a single stored summary by Mongo ObjectId.
 **Examples**
 
 ```bash
-curl "http://localhost:3000/summaries/6762c5a2c4b6b62f8e2d1e11"
+curl "https://btlearn.up.railway.app/api/summaries/6762c5a2c4b6b62f8e2d1e11"
 ```
 
 ```bash
-curl "http://localhost:3000/summaries/6762c5a2c4b6b62f8e2d1e11?includeRaw=true"
+curl "https://btlearn.up.railway.app/api/summaries/6762c5a2c4b6b62f8e2d1e11?includeRaw=true"
 ```
 
 **200 Response**
@@ -104,7 +123,7 @@ Returns the stored document. If `includeRaw=false`, `content.rawText` is omitted
 Common fields you’ll see in responses:
 
 - `title`, `author`, `url`
-- `feed.feedUrl`, `feed.title`
+- `feed.feedUrl`, `feed.title`1
 - `source.domain`
 - `publishedAt`, `ingestedAt`, `lastSeenAt`
 - `content.excerpt`, `content.wordCount`, `content.imageUrl`
@@ -119,5 +138,15 @@ Common fields you’ll see in responses:
 
 ## Quick troubleshooting (API)
 
-- If `/summaries` returns an empty list, it usually means the background fetch/summarize job hasn’t ingested anything yet.
+- If `/health` returns `Cannot GET /health`, you are likely hitting the wrong deployed service or an older deployment.
+- If `/api/summaries` returns an empty list, it usually means the background fetch/summarize job hasn’t ingested anything yet.
 - If the server starts but summaries aren’t appearing, check the server logs for RSS fetch failures or Gemini overload errors.
+
+## Deployment notes (Railway)
+
+- Railway does **not** use your local `.env` file. Configure required values under **Service → Variables**.
+- Required env vars:
+   - `MONGODB_URI`
+   - `GEMINI_API_KEY`
+- Recommended for production:
+   - `RUN_ON_STARTUP=false` (prevents the job from running immediately on each deploy/start)
