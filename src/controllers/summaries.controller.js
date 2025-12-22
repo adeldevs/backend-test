@@ -27,6 +27,7 @@ async function listSummaries(req, res, next) {
         ingestedAt: 1,
         content: { imageUrl: 1 },
         summary: 1,
+        categories: 1,
       })
         .sort(sort)
         .skip(skip)
